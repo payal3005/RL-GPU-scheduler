@@ -5,7 +5,7 @@ from collections import defaultdict
 class MARLAgent:
     """Multi-Agent RL Agent for individual GPU management"""
     
-    def __init__(self, gpu_id, state_size=8, action_size=4, learning_rate=0.001):
+    def __init__(self, gpu_id, state_size=16, action_size=4, learning_rate=0.001):
         self.gpu_id = gpu_id
         self.state_size = state_size
         self.action_size = action_size
@@ -30,9 +30,9 @@ class MARLAgent:
         self.successful_assignments = 0
         
     def get_state(self, gpu, cluster_state):
-        """Extract state for this specific GPU"""
+        """Extract state for this specific GPU with shared cluster context."""
         state = [
-            # GPU-specific state
+            # Local GPU state
             gpu.get_memory_usage_percentage() / 100.0,
             gpu.temperature / 100.0,
             len(gpu.task_queue) / 10.0,
@@ -41,20 +41,22 @@ class MARLAgent:
             1.0 if gpu.crashed else 0.0,
             1.0 if gpu.is_in_cooldown() else 0.0,
             gpu.get_preempted_tasks_count() / 5.0,
-            
-            # Cluster-level context
+
+            # Shared cluster context
             cluster_state['avg_memory_usage'] / 100.0,
-            cluster_state['avg_temperature'] / 100.0,
-            cluster_state['total_queued_tasks'] / 20.0,
-            cluster_state['total_running_tasks'] / 12.0,
+            cluster_state['avg_queue_length'] / 10.0,
+            cluster_state['idle_gpu_count'] / max(1, self.state_size // 4),
+            cluster_state['overloaded_gpu_count'] / max(1, self.state_size // 4),
+            cluster_state['total_cluster_utilization'] / 100.0,
+            cluster_state['available_cluster_memory'] / 32.0,
             cluster_state['gpus_in_cooldown'] / 4.0,
             cluster_state['avg_fragmentation'] / 100.0,
-            
+
             # Task context
             cluster_state.get('current_task_memory', 0) / 8.0,
             cluster_state.get('current_task_time', 0) / 10.0
         ]
-        
+
         return tuple(state[:self.state_size])
     
     def choose_action(self, state, available_actions=None):
@@ -141,52 +143,74 @@ class MARLManager:
         
     def get_cluster_state(self, gpus):
         """Get cluster-level state for coordination"""
+        total_memory_capacity = sum(g.memory_capacity for g in gpus)
+        current_cluster_memory = sum(g.current_memory for g in gpus)
+        total_cluster_utilization = sum(g.get_total_load() for g in gpus)
+        idle_gpu_count = sum(1 for g in gpus if g.get_total_load() == 0)
+        overloaded_gpu_count = sum(1 for g in gpus if g.get_total_load() >= 4)
+
         return {
             'avg_memory_usage': sum(g.get_memory_usage_percentage() for g in gpus) / len(gpus),
             'avg_temperature': sum(g.temperature for g in gpus) / len(gpus),
             'total_queued_tasks': sum(g.get_queue_length() for g in gpus),
             'total_running_tasks': sum(g.get_running_tasks_count() for g in gpus),
+            'avg_queue_length': sum(g.get_queue_length() for g in gpus) / len(gpus),
+            'idle_gpu_count': idle_gpu_count,
+            'overloaded_gpu_count': overloaded_gpu_count,
+            'total_cluster_utilization': (total_cluster_utilization / max(1, len(gpus) * 6)) * 100.0,
+            'available_cluster_memory': max(0.0, total_memory_capacity - current_cluster_memory),
             'gpus_in_cooldown': sum(1 for g in gpus if g.is_in_cooldown()),
             'avg_fragmentation': sum(g.get_fragmentation_percentage() for g in gpus) / len(gpus),
             'total_preemptions': sum(g.total_preemptions for g in gpus)
         }
     
+    def compute_bid_score(self, gpu, task, agent, cluster_state):
+        """Compute a cooperative bid score for a GPU using MARL Q-values and load signals."""
+        state = agent.get_state(gpu, cluster_state)
+        q_values = agent.q_table[state]
+        q_value = float(np.max(q_values)) if len(q_values) else 0.0
+
+        if gpu.crashed or gpu.is_in_cooldown():
+            return -np.inf
+
+        if gpu.current_memory + task.memory_required > gpu.memory_capacity * 1.2:
+            return -np.inf
+
+        memory_headroom = max(0.0, 1.0 - ((gpu.current_memory + task.memory_required) / gpu.memory_capacity))
+        queue_penalty = min(1.0, len(gpu.task_queue) / 10.0)
+        temp_penalty = min(1.0, max(0.0, (gpu.temperature - 50.0) / 50.0))
+        running_penalty = min(1.0, len(gpu.running_tasks) / 3.0)
+        fragmentation_penalty = min(1.0, gpu.get_fragmentation_percentage() / 100.0)
+
+        memory_component = memory_headroom * 0.10
+        queue_component = (1.0 - queue_penalty) * 0.08
+        temperature_component = (1.0 - temp_penalty) * 0.05
+        running_component = (1.0 - running_penalty) * 0.04
+        fragmentation_component = (1.0 - fragmentation_penalty) * 0.03
+
+        return (q_value * 0.70) + memory_component + queue_component + temperature_component + running_component + fragmentation_component
+
     def select_gpu_for_task(self, task, gpus, cluster_state):
-        """Select best GPU for task using MARL coordination"""
+        """Select best GPU for task using cooperative bidding with MARL coordination."""
         task_context = {
             'current_task_memory': task.memory_required,
             'current_task_time': task.execution_time
         }
         cluster_state.update(task_context)
-        
-        # Get Q-values from all agents
+
         gpu_scores = []
         for i, (gpu, agent) in enumerate(zip(gpus, self.agents)):
-            state = agent.get_state(gpu, cluster_state)
-            q_values = agent.q_table[state]
-            
-            # Get best action score (represents willingness to accept task)
-            best_score = np.max(q_values)
-            
-            # Apply heuristic filters
-            if gpu.crashed or gpu.is_in_cooldown():
-                best_score = -np.inf
-            elif gpu.current_memory + task.memory_required > gpu.memory_capacity * 1.2:
-                best_score -= 10.0  # Heavy penalty for memory overload
-            elif gpu.temperature > 80:
-                best_score -= 5.0   # Penalty for high temperature
-            
-            gpu_scores.append((i, best_score))
-        
-        # Sort by score and return best available GPU
+            bid_score = self.compute_bid_score(gpu, task, agent, cluster_state)
+            gpu_scores.append((i, bid_score))
+
         gpu_scores.sort(key=lambda x: x[1], reverse=True)
-        
+
         for gpu_id, score in gpu_scores:
-            if score > -np.inf:  # Available GPU found
+            if np.isfinite(score):
                 return gpu_id
-        
+
         # Fallback to least loaded if all agents reject
-        return min(range(len(gpus)), key=lambda i: len(gpus[i].task_queue))
+        return min(range(len(gpus)), key=lambda i: (len(gpus[i].task_queue), gpus[i].get_total_load()))
     
     def update_agents(self, gpus, tasks_assigned, rewards):
         """Update all agents after task assignment with adaptive coordination"""
@@ -262,7 +286,7 @@ class MARLManager:
         # Penalize severe overload and queue growth.
         queue_length = len(gpu.task_queue)
         if queue_length >= 5:
-            reward -= 4.0
+            reward -= 5.0
         elif queue_length >= 3:
             reward -= 2.0
         elif queue_length <= 1:
