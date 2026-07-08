@@ -250,69 +250,58 @@ class MARLManager:
         })
     
     def calculate_reward(self, gpu, task, success):
-        """Enhanced reward function for better learning"""
+        """Bounded reward focused on assignment outcomes and overload safety."""
         if not success:
-            return -15.0  # Increased penalty for failed assignment
-        
-        reward = 2.0  # Increased base reward for successful assignment
-        
-        # Enhanced memory efficiency bonus
-        memory_usage_ratio = gpu.current_memory / gpu.memory_capacity
-        if memory_usage_ratio < 0.5:
-            reward += 5.0  # Large bonus for efficient memory usage
-        elif memory_usage_ratio < 0.8:
-            reward += 2.0  # Medium bonus for moderate usage
-        else:
-            reward -= 1.0  # Small penalty for high usage
-        
-        # Enhanced temperature management
-        optimal_temp = 65  # Optimal temperature range
-        if gpu.temperature <= optimal_temp:
-            reward += 3.0  # Bonus for optimal temperature
-        elif gpu.temperature <= 80:
-            reward += 1.0  # Small bonus for acceptable temperature
-        else:
-            reward -= (gpu.temperature - 80) * 0.2  # Increased penalty for overheating
-        
-        # Queue management bonus
+            return -20.0
+
+        reward = 4.0
+
+        # Reward successful assignments directly.
+        reward += 3.0
+
+        # Penalize severe overload and queue growth.
         queue_length = len(gpu.task_queue)
-        if queue_length == 0:
-            reward += 2.0  # Bonus for empty queue
-        elif queue_length <= 2:
-            reward += 0.5  # Small bonus for light queue
-        else:
-            reward -= queue_length * 0.15  # Increased penalty for heavy queue
-        
-        # Load balancing bonus
+        if queue_length >= 5:
+            reward -= 4.0
+        elif queue_length >= 3:
+            reward -= 2.0
+        elif queue_length <= 1:
+            reward += 1.0
+
+        # Penalize excessive running-task pressure.
         running_tasks = len(gpu.running_tasks)
-        if running_tasks == 1:
-            reward += 1.0  # Bonus for optimal utilization
+        if running_tasks >= 3:
+            reward -= 2.5
         elif running_tasks == 2:
-            reward += 0.5  # Small bonus for good utilization
-        elif running_tasks >= 3:
-            reward -= 1.0  # Penalty for overutilization
-        
-        # Enhanced crash and cooldown penalties
+            reward -= 0.5
+        elif running_tasks == 1:
+            reward += 0.5
+
+        # Mildly reward moderate memory usage; avoid overfitting to low-memory states.
+        memory_usage_ratio = gpu.current_memory / gpu.memory_capacity
+        if memory_usage_ratio > 0.85:
+            reward -= 1.5
+        elif memory_usage_ratio > 0.6:
+            reward += 0.5
+        else:
+            reward += 0.25
+
+        # Keep temperature influence mild and bounded.
+        if gpu.temperature > 80:
+            reward -= 1.5
+        elif gpu.temperature > 70:
+            reward -= 0.5
+        elif gpu.temperature <= 65:
+            reward += 0.25
+
+        # Heavy penalties for unsafe states.
         if gpu.crashed:
-            reward -= 50.0  # Increased crash penalty
+            reward -= 20.0
         if gpu.is_in_cooldown():
-            reward -= 10.0  # Increased cooldown penalty
-        
-        # Fragmentation management bonus
-        fragmentation = gpu.get_fragmentation_percentage()
-        if fragmentation < 5:
-            reward += 2.0  # Bonus for clean memory
-        elif fragmentation > 15:
-            reward -= 3.0  # Penalty for high fragmentation
-        
-        # Task type bonus (encourage efficient task handling)
-        if hasattr(task, 'task_type'):
-            if task.task_type == "Image":  # Fast tasks
-                reward += 1.0
-            elif task.task_type == "Video":  # Medium tasks
-                reward += 0.5
-        
-        return reward
+            reward -= 8.0
+
+        # Keep rewards bounded and stable.
+        return float(max(-20.0, min(12.0, reward)))
     
     def decay_all_epsilon(self):
         """Decay exploration rate for all agents"""

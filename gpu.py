@@ -55,7 +55,7 @@ class GPU:
             return False
             
         self.task_queue.append(task)
-        self.current_memory += task.memory_required
+        self.current_memory = max(0.0, min(self.memory_capacity, self.current_memory + task.memory_required))
 
         # Memory fragmentation - create fragments when tasks complete
         if self.high_realism_mode and random.random() < 0.3:  # 30% chance
@@ -84,7 +84,7 @@ class GPU:
                 # Reset from crash with high realism boost
                 self.temperature = max(30, self.temperature - 20)  # Big cooldown
                 self.crashed = False
-                self.current_memory *= 0.7  # Memory cleanup
+                self.current_memory = max(0.0, min(self.memory_capacity, self.current_memory))
                 self.memory_fragments = []  # Defragmentation
                 # Resume preempted tasks
                 if self.high_realism_mode and self.preempted_tasks:
@@ -148,7 +148,7 @@ class GPU:
         # Remove completed tasks
         for task in completed_tasks:
             self.running_tasks.remove(task)
-            self.current_memory -= task.memory_required
+            self.current_memory = max(0.0, min(self.memory_capacity, self.current_memory - task.memory_required))
             self.completed_tasks += 1
 
             # Memory fragmentation cleanup
@@ -177,7 +177,7 @@ class GPU:
         return len(self.task_queue) + len(self.running_tasks)
         
     def get_memory_usage_percentage(self):
-        return (self.current_memory / self.memory_capacity) * 100
+        return max(0.0, min(100.0, (self.current_memory / self.memory_capacity) * 100))
         
     def is_available_for_task(self, task_memory):
         return (not self.crashed and 

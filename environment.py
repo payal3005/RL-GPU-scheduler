@@ -2,6 +2,7 @@ import random
 from agent import RLAgent
 from gpu import GPU
 from task import Task
+import task
 from workload.task_generator import TaskGenerator, EnhancedTask
 from workload.traffic_patterns import TrafficManager, TrafficPattern
 from marl_agent import MARLManager
@@ -190,12 +191,9 @@ class GPUEnvironment:
         # Select best GPU using MARL coordination
         selected_gpu_id = self.marl_manager.select_gpu_for_task(task, self.gpus, cluster_state)
         
-        # Assign task and calculate reward
-        success = True
-        try:
-            self.gpus[selected_gpu_id].assign_task(task)
-        except:
-            success = False
+       # Assign task and calculate reward
+        success = self.gpus[selected_gpu_id].assign_task(task)
+        if not success:
             # Fallback to least loaded
             self.least_loaded_scheduler(task)
             return
