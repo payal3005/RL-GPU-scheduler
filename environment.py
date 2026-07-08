@@ -9,6 +9,30 @@ from marl_agent import MARLManager
 from schedulers.traditional import BaselineComparison, FCFSScheduler, RoundRobinScheduler, LeastLoadedScheduler
 
 class GPUEnvironment:
+    def get_dashboard_state(self):
+        return {
+        "time_step": self.time_step,
+        "scheduler": self.scheduler,
+
+        "metrics": self.get_metrics(),
+
+        "gpus": [
+            {
+                "id": gpu.id,
+                "memory": gpu.get_memory_usage_percentage(),
+                "temperature": gpu.temperature,
+                "utilization": gpu.utilization,
+                "queue_length": gpu.get_queue_length(),
+                "running_tasks": gpu.get_running_tasks_count(),
+                "completed_tasks": gpu.completed_tasks,
+                "fragmentation": gpu.get_fragmentation_percentage(),
+                "preemptions": gpu.total_preemptions,
+                "crashed": gpu.crashed,
+                "cooldown": gpu.get_cooldown_remaining()
+            }
+            for gpu in self.gpus
+        ]
+        }
     def __init__(self, scheduler="random"):
 
         # 🔥 MULTI GPU SETUP with 8GB memory capacity as specified
