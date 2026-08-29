@@ -9,30 +9,118 @@ from marl_agent import MARLManager
 from schedulers.traditional import BaselineComparison, FCFSScheduler, RoundRobinScheduler, LeastLoadedScheduler
 
 class GPUEnvironment:
-    def get_dashboard_state(self):
+    def _serialize_task(self, task, gpu_id=None):
+        if task is None:
+            return None
         return {
-        "time_step": self.time_step,
-        "scheduler": self.scheduler,
-
-        "metrics": self.get_metrics(),
-
-        "gpus": [
-            {
-                "id": gpu.id,
-                "memory": gpu.get_memory_usage_percentage(),
-                "temperature": gpu.temperature,
-                "utilization": gpu.utilization,
-                "queue_length": gpu.get_queue_length(),
-                "running_tasks": gpu.get_running_tasks_count(),
-                "completed_tasks": gpu.completed_tasks,
-                "fragmentation": gpu.get_fragmentation_percentage(),
-                "preemptions": gpu.total_preemptions,
-                "crashed": gpu.crashed,
-                "cooldown": gpu.get_cooldown_remaining()
-            }
-            for gpu in self.gpus
-        ]
+            "id": getattr(task, "id", f"task-{gpu_id}-{self.time_step}"),
+            "gpu_id": gpu_id,
+            "task_type": getattr(task, "task_type", "Unknown"),
+            "memory_required": getattr(task, "memory_required", 0),
+            "execution_time": getattr(task, "execution_time", 0),
+            "priority": getattr(task, "priority", "Medium"),
+            "preempted": getattr(task, "preempted", False),
+            "preemption_count": getattr(task, "preemption_count", 0),
         }
+
+    def _record_event(self, message, event_type="info"):
+        self.event_log.append({
+            "id": f"{self.time_step}-{len(self.event_log)}",
+            "time": f"{self.time_step:03d}",
+            "message": message,
+            "type": event_type,
+        })
+        if len(self.event_log) > 50:
+            self.event_log = self.event_log[-50:]
+
+    def _append_history(self):
+        metrics = self.get_metrics()
+        self.history.append({
+            "time_step": self.time_step,
+            "completed": metrics["completed"],
+            "latency": metrics["latency"],
+            "reward": metrics.get("marl_global_reward", 0),
+            "avg_memory_usage": metrics["avg_memory_usage"],
+            "avg_temperature": metrics["avg_temperature"],
+            "total_queued_tasks": metrics["total_queued_tasks"],
+            "total_running_tasks": metrics["total_running_tasks"],
+        })
+        if len(self.history) > 120:
+            self.history = self.history[-120:]
+
+    def get_dashboard_state(self):
+        metrics = self.get_metrics()
+
+        task_queue = []
+        running_tasks = []
+        for gpu in self.gpus:
+            for task in gpu.task_queue:
+                task_queue.append(self._serialize_task(task, gpu.id))
+            for task in gpu.running_tasks:
+                running_tasks.append(self._serialize_task(task, gpu.id))
+
+        return {
+            "time_step": self.time_step,
+            "scheduler": self.scheduler,
+            "metrics": metrics,
+            "gpus": [
+                {
+                    "id": gpu.id,
+                    "memory": gpu.get_memory_usage_percentage(),
+                    "temperature": gpu.temperature,
+                    "utilization": gpu.utilization,
+                    "queue_length": gpu.get_queue_length(),
+                    "running_tasks": gpu.get_running_tasks_count(),
+                    "completed_tasks": gpu.completed_tasks,
+                    "fragmentation": gpu.get_fragmentation_percentage(),
+                    "preemptions": gpu.total_preemptions,
+                    "crashed": gpu.crashed,
+                    "cooldown": gpu.get_cooldown_remaining()
+                }
+                for gpu in self.gpus
+            ],
+            "task_queue": task_queue,
+            "running_tasks": running_tasks,
+            "recent_completed_tasks": self.recent_completed_tasks[-12:],
+            "events": self.event_log[-20:],
+            "chart_data": {
+                "reward": [
+                    {"time_step": entry["time_step"], "value": entry["reward"]}
+                    for entry in self.history
+                ],
+                "memory": [
+                    {"time_step": entry["time_step"], "value": entry["avg_memory_usage"]}
+                    for entry in self.history
+                ],
+                "temperature": [
+                    {"time_step": entry["time_step"], "value": entry["avg_temperature"]}
+                    for entry in self.history
+                ],
+                "queue": [
+                    {"time_step": entry["time_step"], "value": entry["total_queued_tasks"]}
+                    for entry in self.history
+                ],
+                "scheduler_comparison": [
+                    {
+                        "name": self.scheduler,
+                        "completed": metrics["completed"],
+                        "latency": metrics["latency"],
+                        "utilization": metrics["avg_memory_usage"],
+                    },
+                    *[
+                        {
+                            "name": name,
+                            "completed": int(stats.get("assignment_rate", 0) * 100),
+                            "latency": metrics["latency"],
+                            "utilization": metrics["avg_memory_usage"],
+                        }
+                        for name, stats in self.get_traditional_scheduler_stats().items()
+                    ],
+                ],
+            },
+            "history": self.history[-20:],
+        }
+
     def __init__(self, scheduler="random"):
 
         # 🔥 MULTI GPU SETUP with 8GB memory capacity as specified
@@ -69,6 +157,11 @@ class GPUEnvironment:
             'round_robin': RoundRobinScheduler(),
             'least_loaded': LeastLoadedScheduler()
         }
+
+        self.event_log = []
+        self.history = []
+        self.recent_completed_tasks = []
+        self._record_event("Simulation initialized", "info")
 
     def generate_task(self, task_type=None):
         """Generate task using the new task generator"""
@@ -296,9 +389,9 @@ class GPUEnvironment:
         }
 
         for _ in range(num_requests):
-            # Generate mixed workload using new task generator
-            task = self.generate_task()  # Random task type
+            task = self.generate_task()
             self.total_tasks += 1
+            queue_before = [gpu.get_queue_length() for gpu in self.gpus]
 
             if self.scheduler == "random":
                 self.random_scheduler(task)
@@ -323,14 +416,37 @@ class GPUEnvironment:
             elif self.scheduler == "traditional_least_loaded":
                 self.traditional_least_loaded_scheduler(task)
 
+            queue_after = [gpu.get_queue_length() for gpu in self.gpus]
+            assigned_gpu = None
+            for index, (before, after) in enumerate(zip(queue_before, queue_after)):
+                if after > before:
+                    assigned_gpu = index + 1
+                    break
+            if assigned_gpu is not None:
+                self._record_event(f"Task {task.task_type} assigned to GPU {assigned_gpu}", "info")
+            else:
+                self._record_event(f"Task {task.task_type} could not be assigned", "warning")
+
         # process tasks
         for gpu in self.gpus:
+            running_before = list(gpu.running_tasks)
+            crashed_before = gpu.crashed
             gpu.process_tasks()
+            completed_now = [task for task in running_before if task not in gpu.running_tasks]
+            if completed_now:
+                for task in completed_now:
+                    self.recent_completed_tasks.append(self._serialize_task(task, gpu.id))
+                    self._record_event(f"GPU {gpu.id} completed {task.task_type} task", "success")
+                if len(self.recent_completed_tasks) > 25:
+                    self.recent_completed_tasks = self.recent_completed_tasks[-25:]
+            if gpu.crashed and not crashed_before:
+                self._record_event(f"GPU {gpu.id} entered crash cooldown", "warning")
 
         self.agent.decay_epsilon()
         
         # Also decay MARL agents
         self.marl_manager.decay_all_epsilon()
+        self._append_history()
 
     # -----------------------
     # METRICS

@@ -1,25 +1,14 @@
 # AETHERGRID - Advanced GPU Scheduling with Multi-Agent Reinforcement Learning
-[CURRENT PROJECT STATUS (8th july 2026)
+
+## Current Project Status
 
 ✅ GPU simulator complete
-✅ RL scheduler complete
-✅ MARL scheduler complete
-✅ Cluster reward implemented
-✅ Shared state implemented
-✅ Bidding scheduler implemented
-✅ Benchmark fairness implemented
-✅ Dashboard UI implemented
+✅ Traditional, RL, and MARL schedulers implemented
+✅ Live FastAPI backend and WebSocket streaming available
+✅ React/Vite dashboard connected to the live simulator state
+✅ Benchmark comparison panel uses backend values when available
+✅ Dashboard presents simulator metrics separately from MARL-only metrics
 
-IN PROGRESS
-⚠ FastAPI integration
-⚠ WebSocket integration
-⚠ Live dashboard connection
-
-TODO
-- Connect frontend to backend
-- Replace mock data
-- Scheduler animations
-- Comparison mode]
 A sophisticated GPU scheduling simulator that demonstrates the superiority of Multi-Agent Reinforcement Learning (MARL) over traditional scheduling algorithms through comprehensive training, adaptive learning, and real-time performance comparison.
 
 ## 🎯 Project Overview
@@ -121,6 +110,18 @@ python benchmark_schedulers.py
 ```
 Compare all schedulers (MARL vs Traditional) with detailed performance metrics.
 
+#### 8. Run the Live Dashboard
+```bash
+# Start the simulator backend
+uvicorn backend.server:app --reload
+
+# In a second terminal, start the frontend
+cd frontend
+npm install
+npm run dev
+```
+The dashboard now streams live state from the backend instead of relying on mock data.
+
 ## 📁 Project Structure
 
 ```
@@ -144,14 +145,11 @@ gpu-rl-scheduler-main/
 ├── schedulers/
 │   ├── __init__.py
 │   └── traditional.py                # Traditional scheduler implementations
-└── docs/
-    ├── PHASE2_STEP3_SUMMARY.md
-    ├── PHASE2_STEP4_SUMMARY.md
-    ├── MARL_IMPLEMENTATION_SUMMARY.md
-    ├── PHASE3_STEP5_SUMMARY.md
-    ├── MARL_SUPERIORITY_REPORT.md
-    ├── MARL_IMPROVEMENTS_IMPLEMENTED.md
-    └── MARL_TRAINING_GUIDE.md
+├── AETHERGRID_IMPLEMENTATION_REPORT.md
+├── MARL_IMPLEMENTATION_SUMMARY.md
+├── MARL_SUPERIORITY_REPORT.md
+├── MARL_TRAINING_GUIDE.md
+└── MARL_IMPROVEMENTS_IMPLEMENTED.md
 ```
 
 ## 🎯 Usage Examples
@@ -255,13 +253,11 @@ Contributions are welcome! Areas for improvement:
 
 ## 📝 Documentation
 
-Comprehensive documentation available in the `docs/` directory:
-- **PHASE2_STEP3_SUMMARY.md**: Task generator implementation
-- **PHASE2_STEP4_SUMMARY.md**: Traffic pattern management
+Comprehensive documentation is available in the repository root:
+- **AETHERGRID_IMPLEMENTATION_REPORT.md**: Implementation status and feature matrix
 - **MARL_IMPLEMENTATION_SUMMARY.md**: MARL system details
-- **PHASE3_STEP5_SUMMARY.md**: Traditional schedulers
 - **MARL_SUPERIORITY_REPORT.md**: Performance comparison
-- **MARL_IMPROVEMENTS_IMPLEMENTED.md**: Enhanced learning
+- **MARL_IMPROVEMENTS_IMPLEMENTED.md**: Enhanced learning notes
 - **MARL_TRAINING_GUIDE.md**: Training system guide
 
 ## 🏆 Acknowledgments
